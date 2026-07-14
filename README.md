@@ -25,7 +25,7 @@ jupyter notebook day26_mcp_a2a_lab.ipynb
 ```
 ├── day26_mcp_a2a_lab.ipynb
 ├── mcp_server/
-│   └── research_tools_server.py   # MCP + governance guard
+│   └── research_tools_server.py   # 4 MCP tools + governance guard
 ├── agents/
 │   ├── search_agent/              # A2A :8001 + before_tool_callback
 │   ├── database_agent/            # A2A :8002 + SQL governance
@@ -39,7 +39,7 @@ jupyter notebook day26_mcp_a2a_lab.ipynb
 │   │   └── adk_callbacks.py       # ADK before_tool_callback + auto trace_id
 │   ├── routing_tool.py            # suggest_routing (semantic router)
 │   ├── semantic_router.py
-│   └── agent_registry.py
+│   └── agent_registry.py          # Discovery + Agent Card health check
 └── scripts/
     ├── start_a2a_servers.sh       # 3 A2A specialists (8001–8003)
     ├── start_capstone.sh          # A2A + ADK Web một lệnh
@@ -54,6 +54,7 @@ jupyter notebook day26_mcp_a2a_lab.ipynb
 |-----|-----|-----|
 | **Capability matrix** | Chỉ `orchestrator` được gọi MCP tools | Orchestrator chỉ dispatch tới agent trong allowlist |
 | **SQL guard** | Chỉ SELECT, bảng `agent_metrics` | Tương tự trên `database_agent` |
+| **Input guard** | Chặn `password`, giới hạn độ dài text/query | Tool allowlist theo specialist |
 | **Rate limit** | 30 calls/phút/actor | 30 calls/phút/actor |
 | **Runaway prevention** | Tối đa 50 tool calls/task | Tối đa 50 dispatch/task |
 | **HITL** | PII trong SQL → cần phê duyệt | Thiếu `trace_id` → cần phê duyệt |
@@ -96,4 +97,5 @@ adk web agents/orchestrator
 
 ## Sản phẩm lab
 
-Hệ 4 agent qua A2A + MCP, semantic routing (`suggest_routing`), **data governance** và audit trace.
+Hệ 4 agent qua A2A + MCP (4 tools), semantic routing Unicode + fallback chain,
+Agent Card health check, **data governance** và audit trace.

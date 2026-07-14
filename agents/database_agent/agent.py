@@ -38,14 +38,14 @@ def run_sql_query(sql: str) -> dict:
         tool_name="run_sql_query",
         arguments={"sql": sql},
     )
-    if not decision.allowed:
-        return {"status": "blocked", "reason": decision.reason}
     if decision.needs_approval:
         return {
             "status": "hitl_required",
             "reason": decision.reason,
             "message": "Cần phê duyệt trước khi chạy truy vấn có dữ liệu nhạy cảm.",
         }
+    if not decision.allowed:
+        return {"status": "blocked", "reason": decision.reason}
 
     rows = [
         {"agent": "search_agent", "tasks_completed": 42, "avg_latency_ms": 820},

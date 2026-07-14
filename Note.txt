@@ -1,0 +1,433 @@
+HƯỚNG DẪN THỰC HIỆN DỰ ÁN DAY 26
+================================
+
+Đây là quy trình để người học tự chạy và ghi nhận kết quả. Các lệnh dưới đây
+chỉ là hướng dẫn; khi soạn tài liệu này chưa có server, notebook hay test nào
+được chạy thay cho người học.
+
+
+0. CHỌN CÁCH CHẠY PHÙ HỢP
+-------------------------
+
+Cách A — Bash theo đúng README:
+
+- phù hợp Linux/macOS hoặc môi trường Unix có Conda;
+- cần bash, curl, lsof, nohup và xargs;
+- dùng được các script start_*.sh/stop_*.sh.
+
+Cách B — Windows PowerShell:
+
+- không chạy trực tiếp script .sh;
+- mở từng A2A agent bằng python -m uvicorn trong ba terminal;
+- mở ADK Web trong terminal thứ tư;
+- dùng Invoke-RestMethod để kiểm tra Agent Card.
+
+Luôn đứng tại thư mục gốc dự án, tức thư mục chứa README.md và requirements.txt.
+
+
+1. TẠO VÀ KÍCH HOẠT MÔI TRƯỜNG
+------------------------------
+
+Chỉ tạo lần đầu:
+
+    conda create -n pii-env python=3.12 -y
+
+Mỗi phiên làm việc:
+
+    conda activate pii-env
+    pip install -r requirements.txt
+
+Nếu gặp cảnh báo do presidio-anonymizer cũ như README mô tả:
+
+    pip install -U "presidio-anonymizer>=2.2.363"
+
+Không dùng .venv cho bài lab này. Không cài package lẫn vào base environment.
+
+
+2. TẠO FILE CẤU HÌNH BÍ MẬT
+---------------------------
+
+Chỉ sao chép khi .env chưa tồn tại.
+
+Bash:
+
+    cp .env.example .env
+
+PowerShell:
+
+    Copy-Item .env.example .env
+
+Mở .env và thay:
+
+    GOOGLE_API_KEY=your_api_key_here
+
+bằng khóa Google AI Studio thật. Giữ:
+
+    GOOGLE_GENAI_USE_VERTEXAI=FALSE
+
+Ba biến *_AGENT_CARD có thể giữ URL localhost mặc định. Không đưa .env, API key
+hoặc ảnh chụp có API key vào Git/bài nộp.
+
+
+3. ĐẶT PYTHONPATH VÀ MỞ NOTEBOOK
+-------------------------------
+
+Bash:
+
+    export PYTHONPATH=$PWD
+    jupyter notebook day26_mcp_a2a_lab.ipynb
+
+PowerShell:
+
+    $env:PYTHONPATH=(Get-Location).Path
+    jupyter notebook day26_mcp_a2a_lab.ipynb
+
+Trong Jupyter, chọn kernel thuộc pii-env. Ở Module 0:
+
+1) cài requirements nếu chưa cài;
+2) chạy cell nạp .env;
+3) chỉ tiếp tục khi thấy "Môi trường sẵn sàng" và đúng thư mục dự án.
+
+Nếu notebook đang dùng sai kernel, đổi kernel trước khi cài lại package.
+
+
+4. KHỞI ĐỘNG BA A2A SPECIALIST
+------------------------------
+
+Phải hoàn thành trước các cell kiểm tra A2A, full flow và capstone.
+
+4.1. Bash — chạy nền cả ba agent
+
+    bash scripts/start_a2a_servers.sh
+
+Script khởi động:
+
+- search_agent tại localhost:8001;
+- database_agent tại localhost:8002;
+- synthesis_agent tại localhost:8003.
+
+Log và PID được ghi dưới logs/. Không đóng/dừng các process trước khi chạy các
+module A2A và capstone.
+
+4.2. PowerShell — ba terminal riêng
+
+Trong mỗi terminal: vào thư mục gốc, kích hoạt pii-env và đặt PYTHONPATH. Sau đó
+chạy đúng một lệnh:
+
+Terminal 1:
+
+    python -m uvicorn agents.search_agent.agent:a2a_app --host localhost --port 8001
+
+Terminal 2:
+
+    python -m uvicorn agents.database_agent.agent:a2a_app --host localhost --port 8002
+
+Terminal 3:
+
+    python -m uvicorn agents.synthesis_agent.agent:a2a_app --host localhost --port 8003
+
+Giữ cả ba terminal đang chạy. Cách này tránh phụ thuộc lsof/nohup của Bash.
+
+
+5. KIỂM TRA AGENT CARD
+----------------------
+
+Bash:
+
+    curl http://localhost:8001/.well-known/agent-card.json
+    curl http://localhost:8002/.well-known/agent-card.json
+    curl http://localhost:8003/.well-known/agent-card.json
+
+PowerShell:
+
+    Invoke-RestMethod http://localhost:8001/.well-known/agent-card.json
+    Invoke-RestMethod http://localhost:8002/.well-known/agent-card.json
+    Invoke-RestMethod http://localhost:8003/.well-known/agent-card.json
+
+Điều kiện đạt: cả ba endpoint trả JSON Agent Card. Việc object RemoteA2aAgent
+tạo thành công chưa đủ chứng minh server remote đang sống.
+
+
+6. LÀM NOTEBOOK THEO THỨ TỰ
+---------------------------
+
+6.1. Module 1 — MCP
+
+Đọc research_tools_server.py và xác định:
+
+- list_tools() công bố search_documents, sql_query, summarize_text, count_words;
+- call_tool() là biên gọi GovernanceGuard rồi mới chạy helper;
+- stdio phù hợp local vì không cần mở cổng, auth hay triển khai server riêng.
+
+Chú ý quan trọng: cell demo gọi trực tiếp _sql_query() không đi qua call_tool()
+và không đi qua guard. Với mã hiện tại, helper này chỉ kiểm tra chuỗi
+AGENT_METRICS rồi trả dữ liệu mô phỏng; nó không tự ném ValueError cho DROP.
+Muốn quan sát lệnh DROP bị chặn, dùng cell Governance ở Module 5 hoặc gọi qua
+MCP/ADK như prompt W5.
+
+6.2. Module 2 — A2A
+
+Sau khi ba card đều hoạt động:
+
+1) quan sát card để hiểu capability discovery;
+2) tạo RemoteA2aAgent cho search/database như notebook;
+3) phân biệt proxy local với service remote;
+4) giữ server chạy cho các module sau.
+
+Bảng trả lời bài A2A so với sub-agent local:
+
+Tiêu chí        | A2A remote                     | Sub-agent local
+----------------|--------------------------------|-----------------------------
+Triển khai      | Process/service độc lập        | Cùng process/ứng dụng
+Hiệu năng       | Có network/serialize overhead  | Nhanh hơn, gọi nội bộ
+Cô lập state    | Tốt, ranh giới rõ              | Dễ chia sẻ/coupling state
+Scale/lỗi       | Scale và cô lập lỗi riêng      | Chung tài nguyên/blast radius
+Phù hợp         | Nhiều đội, trust/scale riêng   | Prototype nhỏ, latency thấp
+
+6.3. Module 3 — Routing và registry
+
+Chạy các truy vấn mẫu và ghi:
+
+- ứng viên top-1;
+- cosine score;
+- agent cuối hoặc orchestrator fallback.
+
+Tokenizer hiện giữ chữ/số Unicode và dùng casefold, nên tiếng Việt có dấu được
+so khớp trực tiếp. Router vẫn là bag-of-words nên không hiểu sâu từ đồng nghĩa.
+Registry lưu metadata trong RAM nhưng refresh_health() gọi Agent Card của cả ba
+specialist để cập nhật cờ healthy.
+
+6.4. Module 4 — Full flow
+
+check_a2a_servers() hiện kiểm tra cả ba cổng 8001-8003. Khi đều sẵn sàng:
+
+- ví dụ 1 yêu cầu orchestrator transfer qua A2A tới search_agent;
+- ví dụ 2 yêu cầu MCP search_documents, sql_query rồi tổng hợp;
+- print_flow_summary() hiển thị trace_id, authors, số event và đáp án cuối.
+
+Quan sát output và audit theo trace_id, không chỉ nhìn câu trả lời cuối.
+
+6.5. Module 5 — Governance và tracing
+
+Thử các trường hợp trong notebook:
+
+- orchestrator mở MCP: allow;
+- SELECT agent_metrics: allow;
+- DROP TABLE: deny;
+- dispatch tới search_agent có trace_id: allow;
+- dispatch tới agent ngoài allowlist: deny;
+- dispatch thiếu trace_id: hitl_required;
+- email trong SQL MCP: hitl_required.
+
+Sau đó tạo RunConfig.custom_metadata và theo dõi cùng trace_id ở session, event
+và audit. ADK Web không truyền metadata này thì callback tự sinh trace/task ID.
+
+
+7. MỞ CAPSTONE ADK WEB
+----------------------
+
+7.1. Bash — một lệnh
+
+Nếu chưa cần giữ các process cũ:
+
+    bash scripts/start_capstone.sh
+
+Script sẽ dừng A2A process cũ, khởi động lại ba specialist rồi mở ADK Web tại:
+
+    http://localhost:8000
+
+7.2. Chạy từng phần
+
+Bash:
+
+    bash scripts/start_a2a_servers.sh
+    bash scripts/start_adk_web.sh
+
+PowerShell: giữ ba terminal uvicorn ở bước 4 và chạy terminal thứ tư:
+
+    conda activate pii-env
+    $env:PYTHONPATH=(Get-Location).Path
+    adk web agents/orchestrator
+
+Lệnh đúng là "adk web agents/orchestrator". Không dùng "adk web agents" vì thư
+mục agents không có root_agent trực tiếp.
+
+
+8. THỰC HIỆN NĂM PROMPT W1-W5
+------------------------------
+
+Trong ADK Web, tạo session mới rồi làm lần lượt:
+
+- W1: yêu cầu transfer_to_agent sang search_agent để tìm multi-agent
+  orchestration. Kỳ vọng trace có A2A/search_agent và có câu trả lời văn bản.
+- W2: yêu cầu search_documents, SELECT * FROM agent_metrics và tóm tắt. Kỳ vọng
+  trace có hai MCP call hợp lệ.
+- W3: ủy quyền synthesis_agent tạo executive report. Kỳ vọng A2A cổng 8003.
+- W4: gọi suggest_routing cho yêu cầu SELECT độ trễ. Kỳ vọng đề xuất
+  database_agent, nhưng orchestrator vẫn là nơi ra quyết định cuối.
+- W5: gửi DROP TABLE agent_metrics. Kỳ vọng governance trả deny/blocked và
+  không thực thi thao tác.
+
+Với mỗi prompt, ghi vào adk_web_results:
+
+1) agent xuất hiện trong Trace;
+2) tool/giao thức được dùng;
+3) ĐẠT hoặc CHƯA ĐẠT;
+4) tóm tắt đáp án hoặc lỗi quan sát được.
+
+Bubble hiển thị State chỉ là trạng thái session, không phải câu trả lời. Nếu
+không thấy text, mở tab Trace để xem transfer/tool/event và lỗi cụ thể.
+
+
+9. ĐỌC AUDIT LOG
+----------------
+
+Bash:
+
+    tail -5 logs/governance_audit.jsonl
+
+PowerShell:
+
+    Get-Content logs/governance_audit.jsonl -Tail 5
+
+Đối chiếu các trường actor_id, connection_type, action, resource, verdict,
+reason và trace_id. Một tool có thể xuất hiện nhiều bản ghi do callback và biên
+thực thi đều kiểm tra governance; không vội xem đó là hai yêu cầu người dùng.
+
+Với MCP, bản ghi callback phía orchestrator có thể mang trace_id của session,
+trong khi bản ghi kiểm tra lại bên MCP subprocess mặc định có trace_id=null vì
+orchestrator chưa truyền GOVERNANCE_TRACE_ID động vào process. Đây là giới hạn
+trace propagation của bản demo, không phải dấu hiệu tool chắc chắn bị gọi lỗi.
+
+Audit chỉ xuất hiện sau khi một đường governance được gọi. logs/ đã bị Git bỏ
+qua và không phải thành phần cần commit.
+
+
+10. CÁCH LÀM CÁC BÀI TẬP MỞ RỘNG
+--------------------------------
+
+10.1. Bài 1.1 — Khám phá MCP server
+
+Đáp án cần nêu đủ ba ý:
+
+- bốn tool là search_documents, sql_query, summarize_text, count_words;
+- SQL governance nằm ở call_tool()/GovernanceGuard: caller allowlist, tool
+  allowlist, SELECT-only, chặn DDL/DML, chỉ agent_metrics và HITL cho PII;
+- stdio đơn giản cho local, không mở network port, server sống cùng vòng đời
+  client và ADK có thể spawn tự động.
+
+10.2. Bài 1.2 — count_words đã hoàn thành
+
+Lời giải đã được triển khai đồng bộ ở các lớp sau:
+
+1) list_tools() có schema count_words(text);
+2) _count_words() đếm theo khoảng trắng;
+3) call_tool() trả JSON word_count;
+4) policy cho phép tool và giới hạn 10.000 ký tự;
+5) guard áp dụng giới hạn text chung với summarize_text;
+6) cell notebook và orchestrator đều nhận tool mới.
+
+Bạn chạy cell để kiểm tra input rỗng, khoảng trắng, tiếng Việt và nhiều dòng.
+
+10.3. Bài 3.1 — Fallback chain đã hoàn thành
+
+route_with_chain() đã triển khai thuật toán:
+
+1) gọi route(request, top_k=1);
+2) nếu top-1 tồn tại và score >= threshold, trả agent đó;
+3) nếu không đủ điểm, duyệt chain theo thứ tự;
+4) chọn tên agent đã đăng ký hoặc orchestrator đầu tiên;
+5) trả orchestrator nếu chain không có đích hợp lệ;
+6) kiểm tra chain rỗng, tên không tồn tại và request không có token.
+
+route_with_fallback() cũ được giữ nguyên nên routing_tool.py không bị ảnh hưởng.
+
+10.4. Bài 5.2 — Mở rộng governance
+
+- synthesis_agent có trong orchestrator.allowed_targets và có policy riêng.
+- search_documents có blocked_keywords=["password"] và guard áp dụng bằng
+  casefold, không phân biệt hoa/thường.
+- Kiểm tra query thường, query chứa PASSWORD không phân biệt hoa/thường và audit
+  verdict deny.
+- Kiểm tra actor ngoài allowlist không mở được MCP connection.
+
+10.5. Bài capstone
+
+Cập nhật các dòng CHƯA CHẠY bằng kết quả thật, lưu notebook và chụp tối thiểu
+W1, W2 theo yêu cầu. Không tự ghi "ĐẠT" nếu Trace không cho thấy đúng agent/tool.
+
+
+11. XỬ LÝ LỖI THƯỜNG GẶP
+------------------------
+
+Thiếu GOOGLE_API_KEY:
+
+- kiểm tra .env nằm đúng thư mục gốc;
+- không để nguyên your_api_key_here;
+- bảo đảm GOOGLE_GENAI_USE_VERTEXAI=FALSE nếu dùng AI Studio.
+
+ModuleNotFoundError cho agents/lab_utils/google.adk:
+
+- kích hoạt đúng pii-env;
+- đặt PYTHONPATH về thư mục gốc;
+- kiểm tra Jupyter kernel và terminal dùng cùng Python;
+- cài requirements trong chính environment đó.
+
+Connection refused hoặc Agent Card CHƯA ĐẠT:
+
+- xác nhận đúng process/cổng;
+- đọc logs/search_agent.log, database_agent.log, synthesis_agent.log nếu dùng
+  script nền;
+- khởi động đủ cả ba agent, không chỉ 8001 và 8002.
+
+Cổng đã được sử dụng:
+
+- dừng process cũ đúng cách rồi khởi động lại;
+- không mở hai bản cùng agent trên một cổng.
+
+Script .sh báo thiếu lsof/nohup hoặc không chạy trên Windows:
+
+- dùng PowerShell với ba lệnh python -m uvicorn ở bước 4;
+- hoặc dùng một môi trường Unix có đầy đủ các công cụ mà script yêu cầu.
+
+ADK báo "No root_agent found for agents":
+
+- chạy adk web agents/orchestrator, không chạy adk web agents.
+
+DROP không bị chặn khi gọi _sql_query trực tiếp:
+
+- đó là helper mô phỏng và đã bỏ qua guard;
+- kiểm tra qua GovernanceGuard, MCP call hoặc W5.
+
+Chat trống sau khi transfer:
+
+- mở tab Trace;
+- xem specialist có trả event/text hay lỗi API/network;
+- tạo session mới hoặc khởi động lại đúng process nếu cần.
+
+
+12. DỪNG HỆ THỐNG
+-----------------
+
+Bash:
+
+    bash scripts/stop_a2a_servers.sh
+
+ADK Web foreground dừng bằng Ctrl+C. Nếu chạy thủ công trong PowerShell, nhấn
+Ctrl+C tại từng terminal uvicorn và terminal ADK Web.
+
+
+13. CHECKLIST HOÀN THÀNH
+------------------------
+
+[ ] pii-env Python 3.12 và requirements đã sẵn sàng.
+[ ] .env hợp lệ, API key không bị commit.
+[ ] Ba Agent Card ở 8001-8003 phản hồi.
+[ ] MCP có bốn tool và SQL sai bị chặn qua đúng biên gọi.
+[ ] Router có top-k, threshold và fallback.
+[ ] Full flow có trace_id và câu trả lời cuối.
+[ ] ADK Web chạy đúng root_agent.
+[ ] W1-W5 được ghi bằng quan sát thật trong notebook.
+[ ] Audit có allow, deny/hitl_required và trace_id phù hợp.
+[ ] Ảnh chụp/bài nộp không lộ secret.
+[ ] Tất cả process được dừng sau khi hoàn tất.

@@ -1,10 +1,12 @@
-"""Agent registry in-memory — mô phỏng khái niệm registry MCP server Ngày 26."""
+"""Agent registry in-memory với capability discovery và Agent Card health check."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+
+import httpx
 
 
 @dataclass
@@ -40,10 +42,33 @@ class AgentRegistry:
         return agents
 
     def find_by_capability(self, keyword: str) -> list[RegisteredAgent]:
-        keyword_lower = keyword.lower()
+        keyword_lower = keyword.casefold()
         return [
             agent
             for agent in self._agents.values()
-            if keyword_lower in agent.description.lower()
-            or keyword_lower in str(agent.capabilities).lower()
+            if keyword_lower in agent.description.casefold()
+            or keyword_lower in str(agent.capabilities).casefold()
         ]
+
+    def check_health(self, name: str, timeout: float = 3.0) -> bool:
+        """Kiểm tra Agent Card và cập nhật trạng thái của một agent."""
+        agent = self._agents.get(name)
+        if agent is None:
+            return False
+        card_url = (
+            agent.url
+            if agent.url.endswith("/.well-known/agent-card.json")
+            else f"{agent.url.rstrip('/')}/.well-known/agent-card.json"
+        )
+        try:
+            response = httpx.get(card_url, timeout=timeout)
+            response.raise_for_status()
+            response.json()
+            agent.healthy = True
+        except (httpx.HTTPError, ValueError):
+            agent.healthy = False
+        return agent.healthy
+
+    def refresh_health(self, timeout: float = 3.0) -> dict[str, bool]:
+        """Kiểm tra tất cả agent đã đăng ký."""
+        return {name: self.check_health(name, timeout) for name in self._agents}

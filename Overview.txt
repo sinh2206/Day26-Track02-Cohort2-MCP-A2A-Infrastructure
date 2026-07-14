@@ -1,0 +1,330 @@
+TỔNG QUAN DỰ ÁN DAY 26 — HẠ TẦNG MCP/A2A VÀ AGENTIC ROUTING
+================================================================
+
+1. MỤC ĐÍCH DỰ ÁN
+------------------
+
+Đây là bài lab xây dựng một hệ thống nghiên cứu đa tác tử (multi-agent) trên
+Google Agent Development Kit (ADK). Dự án minh họa cách:
+
+- dùng MCP (Model Context Protocol) để chuẩn hóa việc agent gọi công cụ;
+- dùng A2A (Agent-to-Agent) để các agent độc lập giao tiếp qua HTTP;
+- dùng một orchestrator để chọn công cụ hoặc agent chuyên trách;
+- áp dụng capability matrix, rate limit, SQL guard, HITL và audit log;
+- truyền trace_id xuyên suốt một yêu cầu để quan sát toàn bộ luồng xử lý.
+
+Sản phẩm cuối gồm bốn agent, một MCP server có bốn công cụ, semantic router,
+agent registry, lớp data governance và giao diện ADK Web.
+
+Lưu ý: đây là mô hình phục vụ học tập. Tìm kiếm web, kho tài liệu và cơ sở dữ
+liệu đều là dữ liệu mô phỏng nằm trong mã nguồn; dự án không gọi công cụ tìm
+kiếm thật và không kết nối một hệ quản trị cơ sở dữ liệu thật.
+
+
+2. KIẾN TRÚC TỔNG THỂ
+---------------------
+
+Người dùng / Notebook / ADK Web (:8000)
+                    |
+                    v
+             Orchestrator (ADK)
+              /              \
+             / A2A qua HTTP   \ MCP qua stdio
+            v                  v
+ Search Agent :8001       research-tools subprocess
+ Database Agent :8002       |- search_documents
+ Synthesis Agent :8003      |- sql_query
+                            |- summarize_text
+                            `- count_words
+
+Bao quanh các nhánh trên là lớp governance:
+
+Request -> callback/guard -> ALLOW | DENY | HITL_REQUIRED
+                  |
+                  `-> logs/governance_audit.jsonl
+
+Phân biệt hai giao thức chính:
+
+- MCP chuẩn hóa giao diện giữa agent và tool. Trong dự án, orchestrator dùng
+  McpToolset để tạo một subprocess Python và trao đổi với MCP server qua stdio.
+- A2A chuẩn hóa giao tiếp giữa agent với agent. Ba specialist chạy thành ba
+  dịch vụ HTTP riêng và công bố Agent Card tại
+  /.well-known/agent-card.json.
+- ADK là framework ghép hai nhánh trên, quản lý model, tool, sub-agent, session,
+  callback, event và giao diện web.
+
+
+3. LUỒNG XỬ LÝ ĐẦU CUỐI
+-----------------------
+
+1) env_setup.py nạp .env và kiểm tra GOOGLE_API_KEY.
+2) Orchestrator tạo ba RemoteA2aAgent và một McpToolset.
+3) Khi khởi tạo, orchestrator kiểm tra quyền mở kết nối MCP và kiểm tra policy
+   cho ba đích A2A. Đây là kiểm tra quyền, không thay thế health check HTTP.
+4) Một session được tạo với trace_id và task_id. Trong ADK Web, callback tự sinh
+   hai giá trị này nếu giao diện không truyền RunConfig.custom_metadata.
+5) Gemini trong orchestrator đọc yêu cầu và quyết định một trong các hướng:
+   - gọi MCP tool cục bộ;
+   - transfer_to_agent tới một specialist qua A2A;
+   - gọi suggest_routing khi chưa chắc nên chọn agent nào.
+6) before_tool_callback gọi GovernanceGuard trước thao tác. MCP server và hàm
+   tool của specialist cũng tự kiểm tra lại ở biên thực thi.
+7) Mọi quyết định allow, deny hoặc hitl_required được ghi theo định dạng JSONL.
+8) Kết quả quay về orchestrator để tạo câu trả lời cuối cho người dùng.
+
+
+4. GIẢI THÍCH TỪNG THÀNH PHẦN
+-----------------------------
+
+4.1. README.md
+
+Tài liệu bắt đầu nhanh: tạo Conda environment pii-env với Python 3.12, cài
+requirements, tạo .env, đặt PYTHONPATH, mở notebook, khởi động/dừng các dịch vụ
+và mô tả ma trận governance. README cũng nhấn mạnh phải chạy ADK Web bằng
+"adk web agents/orchestrator", không chạy "adk web agents".
+
+4.2. day26_mcp_a2a_lab.ipynb
+
+Notebook là giáo trình và kịch bản demo chính, gồm:
+
+- Module 0: chuẩn bị môi trường và API key;
+- bước khởi động/kiểm tra Agent Card của ba A2A specialist;
+- Module 1: MCP server, tool schema và McpToolset;
+- Module 2: Agent Card, vòng đời A2A Task và RemoteA2aAgent;
+- Module 3: semantic routing và agent registry;
+- Module 4: chạy full flow và capstone trên ADK Web;
+- Module 5: state, bảo mật, governance, audit và distributed tracing;
+- lời giải count_words, fallback chain, policy và biểu mẫu ghi kết quả W1-W5.
+
+4.3. requirements.txt và .env.example
+
+- google-adk[a2a]: framework agent và phần phụ thuộc A2A;
+- mcp: SDK để xây MCP server/client;
+- uvicorn: chạy ba ASGI A2A application;
+- httpx: kiểm tra Agent Card;
+- python-dotenv: nạp biến môi trường từ .env;
+- jupyter, ipykernel: chạy notebook;
+- numpy: phụ thuộc phục vụ bài lab/mở rộng;
+- cryptography được ghim trong nhánh 46.x để tránh xung đột đã nêu trong README.
+
+.env.example chứa GOOGLE_API_KEY, cờ chọn Google AI Studio thay vì Vertex AI và
+ba URL Agent Card có thể ghi đè. File .env thật đã được .gitignore loại trừ và
+không được đưa API key vào Git.
+
+4.4. mcp_server/research_tools_server.py
+
+Đây là MCP server tên research-tools, dùng transport stdio và công bố bốn tool:
+
+- search_documents(query): tìm chuỗi con không phân biệt hoa/thường trong ba
+  tài liệu cố định của biến DOCUMENTS;
+- sql_query(sql): sau khi governance cho phép, trả về các hàng metrics cố định
+  nếu câu lệnh có tên agent_metrics; không thực thi SQL thật;
+- summarize_text(text, max_bullets=3): tách văn bản theo dấu chấm và lấy tối đa
+  số câu yêu cầu thành danh sách gạch đầu dòng.
+- count_words(text): đếm số token phân tách bởi khoảng trắng và trả JSON có
+  trường word_count.
+
+list_tools() chỉ công bố tool được policy cho actor hiện tại. call_tool() gọi
+GovernanceGuard, trả JSON trạng thái blocked/hitl_required nếu bị chặn, rồi mới
+gọi helper tương ứng. Actor, trace và task của MCP subprocess lấy từ các biến
+GOVERNANCE_ACTOR_ID, GOVERNANCE_TRACE_ID và GOVERNANCE_TASK_ID.
+
+4.5. agents/search_agent/agent.py
+
+- Agent chuyên tìm kiếm, dùng model gemini-2.5-flash.
+- Expose dưới dạng A2A application trên cổng 8001.
+- Tool search_web trả hai kết quả mô phỏng, không truy cập Internet.
+- Chỉ có quyền đọc/tìm kiếm; callback và chính hàm tool đều gọi governance.
+
+4.6. agents/database_agent/agent.py
+
+- Agent chuyên SQL/metrics, dùng model gemini-2.5-flash.
+- Expose dưới dạng A2A application trên cổng 8002.
+- Tool run_sql_query chỉ được policy cho phép với SELECT trên agent_metrics.
+- Kết quả là danh sách metrics cố định; không có database thật.
+
+4.7. agents/synthesis_agent/agent.py
+
+- Agent chuyên tổng hợp, dùng model gemini-2.5-flash.
+- Expose dưới dạng A2A application trên cổng 8003.
+- Tool synthesize_report tách câu, lấy tối đa năm ý chính, đếm từ và tạo kiểu
+  tóm tắt technical hoặc executive.
+- Agent chỉ tổng hợp findings đã nhận, không tự thu thập dữ liệu mới.
+
+4.8. agents/orchestrator/agent.py
+
+Đây là root_agent của hệ thống. Thành phần này:
+
+- tạo proxy RemoteA2aAgent cho ba specialist từ URL Agent Card;
+- kiểm tra capability matrix A2A khi khởi tạo;
+- tạo McpToolset, spawn research_tools_server.py bằng đúng Python hiện hành;
+- lọc MCP tools theo policy thay vì danh sách tùy ý;
+- gắn suggest_routing như một function tool tư vấn;
+- hướng dẫn Gemini chọn search cho tra cứu, database cho SQL/metrics, synthesis
+  cho báo cáo và MCP cho thao tác local;
+- gắn callback governance trước agent và trước tool;
+- đặt thinking_budget=0 để demo phản hồi nhanh, dễ quan sát.
+
+4.9. lab_utils/env_setup.py
+
+Tìm .env từ thư mục gốc, nạp biến một cách idempotent, mặc định
+GOOGLE_GENAI_USE_VERTEXAI=FALSE và báo lỗi sớm nếu thiếu GOOGLE_API_KEY.
+
+4.10. lab_utils/semantic_router.py
+
+Router học tập không dùng embedding model. Nó:
+
+- tokenize chữ và số theo Unicode, dùng casefold để không phân biệt hoa/thường;
+- biểu diễn request và capability bằng tần suất từ (bag-of-words);
+- tính cosine similarity;
+- sắp xếp điểm giảm dần và trả top-k;
+- trả orchestrator nếu điểm tốt nhất thấp hơn threshold mặc định 0,15;
+- route_with_chain() chọn fallback hợp lệ đầu tiên khi top-1 không đạt ngưỡng.
+
+Tokenizer hiện giữ được tiếng Việt có dấu nên các mô tả và truy vấn tiếng Việt
+có thể khớp trực tiếp. Đây vẫn là bag-of-words; production nên dùng embedding
+đa ngôn ngữ khi cần hiểu đồng nghĩa và ngữ cảnh sâu hơn.
+
+4.11. lab_utils/routing_tool.py
+
+Khởi tạo sẵn capability cho search_agent, database_agent và synthesis_agent.
+suggest_routing() trả recommended_agent, ba ứng viên kèm điểm, fallback và ghi
+rõ đây chỉ là gợi ý; quyết định MCP hay A2A cuối cùng vẫn thuộc orchestrator.
+
+4.12. lab_utils/agent_registry.py
+
+Registry in-memory hỗ trợ đăng ký, hủy đăng ký, đổi cờ healthy, liệt kê agent
+và tìm theo từ khóa capability. check_health() gọi Agent Card của một agent;
+refresh_health() kiểm tra toàn bộ registry và cập nhật cờ healthy. Full flow vẫn
+có phép kiểm tra HTTP riêng trước khi chạy orchestrator.
+
+4.13. lab_utils/full_flow.py
+
+- check_a2a_servers(): gọi ba Agent Card với httpx;
+- run_full_flow(): tạo InMemoryRunner/session, sinh trace_id, đặt metadata, gửi
+  message, duyệt event bất đồng bộ và gom authors/final_answer;
+- print_flow_summary(): in trace, agent tham gia, số event và câu trả lời cuối.
+
+Đây là cầu nối để notebook chạy luồng thật qua orchestrator, A2A và MCP mà
+không cần mở ADK Web.
+
+4.14. lab_utils/governance/
+
+- models.py: enum ConnectionType, GovernanceVerdict và dataclass cho quyết định,
+  bản ghi audit;
+- policy.json: capability matrix, giới hạn toàn cục, phân loại dữ liệu, mẫu PII;
+- rate_limit.py: sliding window 60 giây, lưu trong RAM theo actor;
+- guard.py: điểm quyết định trung tâm cho MCP connection/tool, A2A dispatch,
+  specialist tool, SQL, PII, số tool call và chi phí;
+- audit.py: ghi từng AuditEntry thành một dòng JSON UTF-8;
+- adk_callbacks.py: lấy actor/trace/task từ ADK context, chặn tool trước khi
+  chạy và tự khởi tạo state cho ADK Web;
+- __init__.py: xuất giao diện công khai của package governance.
+
+4.15. scripts/
+
+- _lab_env.sh: nạp .env, tìm Python của Conda có google.adk, xác định uvicorn
+  và lệnh adk cùng môi trường;
+- start_search_agent.sh, start_database_agent.sh, start_synthesis_agent.sh:
+  chạy từng specialist foreground với --reload;
+- start_a2a_servers.sh: chạy nền cả ba specialist, lưu PID/log và kiểm tra card;
+- start_adk_web.sh: mở ADK Web cho đúng thư mục agents/orchestrator;
+- start_capstone.sh: dừng tiến trình A2A cũ, khởi động lại ba specialist rồi
+  mở ADK Web;
+- stop_a2a_servers.sh: dừng theo PID, sau đó giải phóng cổng 8001-8003.
+
+Các script là Bash và dùng lsof, curl, nohup, xargs. Native PowerShell không
+chạy trực tiếp các script này; có thể dùng môi trường Unix phù hợp hoặc chạy
+từng lệnh uvicorn/adk thủ công như hướng dẫn trong Note.txt.
+
+
+5. CHÍNH SÁCH GOVERNANCE HIỆN TẠI
+---------------------------------
+
+5.1. MCP research-tools
+
+- Chỉ actor orchestrator được mở kết nối.
+- search_documents: tối đa 500 ký tự.
+- search_documents chặn từ khóa password không phân biệt hoa/thường.
+- sql_query: chỉ SELECT và chỉ bảng agent_metrics; DDL/DML bị chặn; email hoặc
+  mẫu SSN kiểu 123-45-6789 dẫn đến HITL_REQUIRED.
+- summarize_text: tối đa 10.000 ký tự.
+- count_words: tối đa 10.000 ký tự.
+
+5.2. A2A
+
+- orchestrator chỉ được dispatch tới search_agent, database_agent và
+  synthesis_agent, đồng thời phải có trace_id;
+- search_agent chỉ nhận orchestrator và chỉ có search_web;
+- database_agent chỉ nhận orchestrator và chỉ có run_sql_query;
+- synthesis_agent chỉ nhận orchestrator và chỉ có synthesize_report.
+
+5.3. Giới hạn toàn cục
+
+- 30 lần gọi/phút/actor trong từng process;
+- tối đa 50 MCP tool call/A2A dispatch mỗi task trong từng GovernanceGuard;
+- trần chi phí 10 USD có hàm record_cost() để kiểm tra;
+- max_execution_seconds=300 có trong policy.
+
+Trong phiên bản hiện tại, rate limit được nối vào các đường gọi. Giới hạn 50 lần
+được kiểm tra trước MCP tool và A2A dispatch; authorize_agent_tool() của
+specialist có tăng counter nhưng chưa gọi bước kiểm tra giới hạn trước khi chạy.
+record_cost() chưa được gọi từ full flow, và max_execution_seconds chưa có
+timeout thực thi tương ứng. Các blocked_actions và danh sách hitl_required trong
+JSON chủ yếu mô tả policy; guard chỉ thực thi các nhánh được viết rõ trong mã.
+
+5.4. Audit và trace
+
+Mỗi dòng audit có timestamp UTC, actor, loại kết nối, action, resource, verdict,
+reason, input_summary tối đa 500 ký tự, trace_id và metadata. File log nằm tại
+logs/governance_audit.jsonl và được tạo lúc có thao tác governance.
+
+Callback và biên thực thi đều kiểm tra quyền, nên một thao tác có thể sinh hơn
+một bản ghi audit. Đây là kiểm tra nhiều lớp, nhưng cũng cần lưu ý khi đếm số
+lần gọi trong demo. Log hiện lưu tóm tắt input dạng rõ; production cần che PII,
+kiểm soát quyền đọc log và dùng nơi lưu trữ an toàn.
+
+Theo cấu hình mặc định của orchestrator, callback MCP phía ADK có trace của
+session, còn MCP subprocess không được truyền GOVERNANCE_TRACE_ID động nên bản
+ghi kiểm tra lại ở server có thể có trace_id=null. Có thể dùng cặp bản ghi phía
+callback để đối chiếu trong demo; production cần truyền trace context qua biên
+MCP một cách nhất quán.
+
+
+6. DỮ LIỆU VÀ TRẠNG THÁI
+------------------------
+
+- MCP DOCUMENTS: ba tài liệu về chương trình, transport MCP và vòng đời A2A.
+- MCP SQL_ROWS: metrics của search, database và synthesis agent.
+- Database specialist: hai hàng metrics mô phỏng.
+- Session của notebook: InMemoryRunner, mất khi process dừng.
+- Semantic router và registry: hoàn toàn in-memory.
+- Rate limit, tool counter và cost counter: in-memory theo process.
+- Log/PID: sinh dưới logs/ và đã bị .gitignore loại trừ.
+
+
+7. CÁC ĐIỂM CẦN BIẾT KHI ĐỌC NOTEBOOK
+-------------------------------------
+
+- MCP server hiện có bốn tool; count_words đã có schema, policy, helper và nhánh
+  call_tool().
+- Helper _sql_query() không tự áp dụng governance. Quyền được kiểm tra trong
+  call_tool()/callback. Vì vậy cell gọi thẳng _sql_query() đi vòng qua guard;
+  ví dụ DROP TABLE có chứa agent_metrics không chứng minh được lệnh đã bị chặn.
+  Hãy dùng cell Governance hoặc đường MCP/ADK để kiểm tra deny thực tế.
+- Bài 5.2 yêu cầu thêm synthesis_agent vào allowed_targets, nhưng policy hiện
+  đã chứa agent này; chỉ cần xác nhận, không thêm trùng.
+- blocked_keywords cho password đã có cả cấu hình lẫn logic trong guard.py.
+- Registry đã có health check Agent Card; kết quả chỉ có ý nghĩa khi server chạy.
+- Ba service A2A và Gemini cần API key; riêng các helper dữ liệu mô phỏng có thể
+  được đọc trực tiếp nhưng không đại diện cho full flow.
+
+
+8. PHẠM VI VÀ HƯỚNG MỞ RỘNG
+---------------------------
+
+Để tiến gần production có thể thay dữ liệu mô phỏng bằng search/database thật,
+dùng MCP HTTP/SSE có xác thực, registry/health check bền vững, embedding router
+đa ngôn ngữ, Redis/PostgreSQL cho state, distributed rate limit, OpenTelemetry,
+timeout thực, cost accounting, hàng đợi, retry/circuit breaker, cơ chế HITL có
+thể tiếp tục task và bộ test tự động cho policy.

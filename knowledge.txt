@@ -1,0 +1,268 @@
+KIẾN THỨC CẦN CÓ CHO BÀI TẬP MCP/A2A
+=====================================
+
+Tài liệu này liệt kê kiến thức nền theo mức độ cần thiết. Không cần thành thạo
+toàn bộ trước khi bắt đầu, nhưng nên hiểu nhóm 1-7 để đọc được mã nguồn và trace.
+
+
+1. PYTHON HIỆN ĐẠI
+------------------
+
+Cần nắm:
+
+- module, package, import và vai trò của __init__.py;
+- hàm, type hint, giá trị mặc định, dict/list và xử lý chuỗi;
+- dataclass, Enum, property và exception;
+- pathlib.Path để xác định thư mục dự án;
+- biến môi trường qua os.environ;
+- decorator, ví dụ @app.list_tools() và @app.call_tool();
+- async/await, async context manager và async iterator;
+- subprocess/process: MCP server là một process con, A2A agent là process riêng.
+
+Liên hệ với dự án:
+
+- async def main() chạy MCP stdio server;
+- run_full_flow() duyệt sự kiện bằng "async for";
+- dataclass mô tả AgentCapability, RegisteredAgent và GovernanceDecision;
+- singleton get_guard() giữ counter/rate limiter trong một process.
+
+
+2. MÔI TRƯỜNG VÀ QUẢN LÝ PHỤ THUỘC
+-----------------------------------
+
+- Conda environment cô lập Python và package của lab khỏi base environment.
+- pip đọc requirements.txt và giải quyết phiên bản phụ thuộc.
+- Jupyter kernel phải trỏ đúng pii-env; kích hoạt Conda ở terminal chưa đảm bảo
+  notebook đang dùng cùng interpreter.
+- PYTHONPATH phải chứa thư mục gốc để import agents và lab_utils ổn định.
+- .env chứa secret/cấu hình cục bộ; .env.example chỉ là mẫu công khai.
+- Không commit API key. Cần hiểu .gitignore và nguyên tắc xoay key nếu lộ.
+- Phiên bản cryptography/presidio có thể xung đột; đọc constraint trước khi
+  nâng/hạ package tùy ý.
+
+
+3. CLIENT-SERVER, HTTP VÀ PROCESS
+---------------------------------
+
+Cần hiểu:
+
+- localhost là máy hiện tại; 8000-8003 là bốn cổng khác nhau;
+- một cổng chỉ có một process lắng nghe tại một thời điểm;
+- Uvicorn chạy ASGI application;
+- HTTP GET tới /.well-known/agent-card.json dùng để discovery/health check;
+- JSON là định dạng trao đổi cấu trúc; JSONL là mỗi dòng một JSON độc lập;
+- stdio là stdin/stdout giữa process cha-con, không phải HTTP;
+- foreground, background, PID, signal dừng process và log file;
+- timeout, retry và health check là các mối quan tâm khác nhau.
+
+Trong lab, ADK Web ở :8000; search, database, synthesis lần lượt ở :8001,
+:8002, :8003. MCP server không mở cổng vì được spawn và nói chuyện qua stdio.
+
+
+4. LLM AGENT VÀ GOOGLE ADK
+--------------------------
+
+Các khái niệm cần nắm:
+
+- Agent = model + instruction + tools + sub_agents + callbacks;
+- root_agent là điểm vào mà ADK CLI tìm kiếm;
+- function tool dùng docstring/type hint để model hiểu tên, tham số và kết quả;
+- model chọn tool theo instruction và ngữ cảnh, nên kết quả có tính xác suất;
+- before_agent_callback chuẩn bị state trước lượt chạy;
+- before_tool_callback có thể trả kết quả thay thế để chặn tool;
+- session giữ trạng thái hội thoại; Runner điều phối event;
+- RunConfig.custom_metadata truyền metadata của một lần chạy;
+- InMemoryRunner phù hợp demo, không cung cấp độ bền sau khi process dừng;
+- transfer_to_agent là tool nội bộ để chuyển việc cho sub-agent.
+
+Cần phân biệt "router gợi ý" với "LLM thực sự quyết định". suggest_routing chỉ
+trả xếp hạng; instruction của orchestrator và Gemini mới quyết định đường đi.
+
+
+5. MODEL CONTEXT PROTOCOL (MCP)
+-------------------------------
+
+MCP chuẩn hóa cách một ứng dụng AI khám phá và gọi năng lực bên ngoài.
+
+Ba primitive thường gặp:
+
+- Tools: hàm có tác dụng tính toán/thao tác;
+- Resources: dữ liệu có thể đọc;
+- Prompts: mẫu prompt tái sử dụng.
+
+Bài lab chỉ triển khai Tools. Mỗi tool cần:
+
+- tên và mô tả rõ để LLM chọn đúng;
+- JSON Schema cho input, gồm type/properties/required;
+- validate input tại biên tin cậy;
+- kết quả có cấu trúc và lỗi dễ hiểu;
+- policy/audit trước khi thực thi.
+
+Transport:
+
+- stdio: đơn giản, local, vòng đời gắn với client; phù hợp lab;
+- HTTP/SSE: thích hợp server remote, cần auth/TLS/network policy;
+- WebSocket: hai chiều liên tục, chỉ dùng khi use case cần.
+
+Trong dự án, McpToolset là phía client/host của ADK; research-tools là server.
+Không được đánh đồng gọi helper Python trực tiếp với gọi MCP tool, vì gọi helper
+sẽ bỏ qua schema, protocol, callback và có thể bỏ qua governance.
+
+
+6. AGENT-TO-AGENT (A2A)
+------------------------
+
+A2A coi agent như một dịch vụ độc lập có hợp đồng khám phá và vòng đời task.
+
+- Agent Card: mô tả tên, capability và endpoint của agent;
+- Message: nội dung giao tiếp trong task;
+- Task: đơn vị công việc có trạng thái submitted, working, input-required,
+  completed, failed hoặc canceled;
+- to_a2a(): biến ADK agent thành A2A ASGI application;
+- RemoteA2aAgent: proxy để orchestrator tiêu thụ agent ở process/máy khác.
+
+A2A remote và sub-agent local:
+
+- Remote: triển khai/scale/cô lập lỗi độc lập, có network latency và vận hành
+  phức tạp hơn;
+- Local: gọi nhanh, chia sẻ process dễ dàng, nhưng coupling và blast radius lớn;
+- chọn A2A khi agent thuộc đội khác, cần scale riêng, có trust boundary riêng
+  hoặc cần tái sử dụng qua nhiều hệ thống;
+- chọn local khi prototype nhỏ, latency quan trọng và cùng vòng đời triển khai.
+
+
+7. AGENTIC ROUTING
+------------------
+
+Ba chiến lược cơ bản:
+
+- keyword/rule: nhanh, rẻ, dễ giải thích nhưng giòn;
+- embedding: hiểu gần nghĩa tốt hơn, cần model/vector và thêm độ trễ;
+- LLM-based: linh hoạt nhất, nhưng tốn chi phí và khó đảm bảo tính xác định.
+
+Router trong lab dùng bag-of-words:
+
+1) tách chữ/số theo Unicode và đếm số lần xuất hiện của từng token;
+2) tạo vector cho request và mô tả capability;
+3) tính cosine similarity:
+
+   cosine(a,b) = (a . b) / (||a|| * ||b||)
+
+4) xếp hạng giảm dần và lấy top-k;
+5) nếu top-1 thấp hơn 0,15 thì fallback về orchestrator.
+
+Cần hiểu threshold cân bằng giữa route sai và fallback quá nhiều. Production
+còn cần version capability, calibration, đánh giá offline, fallback chain và
+đường leo thang cho con người.
+
+Tokenizer của lab giữ được tiếng Việt có dấu và dùng casefold. Tuy vậy,
+bag-of-words vẫn không hiểu đồng nghĩa; embedding đa ngôn ngữ phù hợp hơn khi
+capability và câu hỏi dùng cách diễn đạt khác nhau.
+
+
+8. AGENT REGISTRY VÀ SERVICE DISCOVERY
+--------------------------------------
+
+Registry lưu tối thiểu:
+
+- tên/ID agent;
+- URL và transport;
+- mô tả/capability/schema;
+- version và trạng thái health;
+- thời điểm đăng ký/heartbeat.
+
+Phải phân biệt capability discovery với liveness/readiness. Registry trong lab
+vẫn là dict trong RAM, nhưng check_health()/refresh_health() dùng httpx gọi
+Agent Card và cập nhật cờ healthy tại thời điểm kiểm tra.
+
+
+9. DATA GOVERNANCE VÀ BẢO MẬT
+-----------------------------
+
+Các nguyên tắc chính:
+
+- least privilege/minimal capability: agent chỉ nhận tool thật sự cần;
+- allowlist tốt hơn blacklist cho caller, target, tool và bảng SQL;
+- validate ở server, không tin prompt hoặc client;
+- read-only SQL: chỉ SELECT, chặn DDL/DML và giới hạn bảng;
+- rate limit: giới hạn tần suất theo actor;
+- runaway prevention: giới hạn tool call, thời gian và chi phí mỗi task;
+- PII detection: nhận diện dữ liệu định danh trước khi xử lý;
+- HITL: tạm dừng hành động nhạy cảm để con người phê duyệt;
+- audit: lưu ai làm gì, lúc nào, trên tài nguyên nào, quyết định gì;
+- defense in depth: kiểm tra ở callback và tại biên tool/server.
+
+Ba verdict của dự án:
+
+- ALLOW: cho phép thực thi;
+- DENY: chặn dứt điểm;
+- HITL_REQUIRED: chưa thực thi, cần bước phê duyệt của con người.
+
+HITL thực tế cần cơ chế lưu task, gửi yêu cầu phê duyệt và resume/cancel. Demo
+hiện chỉ trả trạng thái hitl_required, chưa có workflow phê duyệt hoàn chỉnh.
+
+Lưu ý bảo mật audit: input_summary vẫn có thể chứa dữ liệu nhạy cảm. Production
+phải mask/tokenize PII, mã hóa, phân quyền, đặt retention và chống sửa log.
+
+
+10. SQL AN TOÀN
+---------------
+
+Cần biết các nhóm lệnh:
+
+- DQL/read: SELECT;
+- DML/write: INSERT, UPDATE, DELETE;
+- DDL/schema: CREATE, ALTER, DROP, TRUNCATE.
+
+Kiểm tra chuỗi như lab chỉ phù hợp minh họa. Production nên dùng tài khoản DB
+read-only, SQL parser/AST, query timeout, row limit, parameter binding, allowlist
+schema/table/column và database proxy. Không dựa riêng vào instruction của LLM.
+
+
+11. STATE, TRACE VÀ OBSERVABILITY
+---------------------------------
+
+Ba ID có vai trò khác nhau:
+
+- session_id: một phiên hội thoại;
+- task_id: một đơn vị công việc và giới hạn tài nguyên;
+- trace_id: liên kết mọi span/event/log của cùng yêu cầu qua nhiều process.
+
+Trace tốt phải truyền qua ranh giới A2A/MCP và xuất hiện trong audit. Các metric
+nên theo dõi gồm tỷ lệ completed/failed, latency, số tool call, chi phí/task,
+queue depth, tỷ lệ fallback, deny/HITL và lỗi theo agent.
+
+State production thường được đưa ra ngoài process:
+
+- Redis cho state ngắn hạn/cache/lock;
+- PostgreSQL cho lịch sử bền vững;
+- object storage cho artifact lớn;
+- OpenTelemetry/backend tracing cho distributed trace.
+
+
+12. BASH, POWERSHELL VÀ CÔNG CỤ HỆ THỐNG
+----------------------------------------
+
+Script của repo là Bash, cần hiểu source, export, set -euo pipefail, nohup, PID,
+curl, lsof, xargs và signal kill. Trên Windows native, PowerShell không chạy file
+.sh; có thể mở từng uvicorn trong terminal riêng. Không trộn cú pháp:
+
+- Bash đặt biến: export PYTHONPATH=$PWD
+- PowerShell đặt biến: $env:PYTHONPATH=(Get-Location).Path
+- Bash sao chép: cp .env.example .env
+- PowerShell sao chép: Copy-Item .env.example .env
+
+
+13. THỨ TỰ HỌC ĐỀ XUẤT
+----------------------
+
+1) Python async, process, HTTP/JSON.
+2) ADK Agent, tool, callback, Runner và session.
+3) MCP tool/schema/stdio.
+4) A2A Agent Card, task và RemoteA2aAgent.
+5) cosine similarity, threshold, fallback và registry.
+6) capability matrix, SQL guard, PII, rate limit, HITL, audit.
+7) trace, state ngoài process và các yêu cầu production.
+
+Sau mỗi nhóm, đối chiếu lần lượt research_tools_server.py,
+agents/orchestrator/agent.py, semantic_router.py và governance/guard.py.

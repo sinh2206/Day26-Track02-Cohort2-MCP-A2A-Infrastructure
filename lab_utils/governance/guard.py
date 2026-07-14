@@ -91,6 +91,26 @@ class GovernanceGuard:
                 )
                 self._log(decision, "mcp_tool_call", query, trace_id)
                 return decision
+            normalized_query = query.casefold()
+            blocked_keywords = tool_policy.get("blocked_keywords", [])
+            matched = next(
+                (
+                    word
+                    for word in blocked_keywords
+                    if str(word).casefold() in normalized_query
+                ),
+                None,
+            )
+            if matched:
+                decision = GovernanceDecision(
+                    verdict=GovernanceVerdict.DENY,
+                    reason=f"Truy vấn chứa từ khóa bị chặn: '{matched}'",
+                    actor_id=actor_id,
+                    connection_type=ConnectionType.MCP,
+                    resource=f"mcp:research-tools/{tool_name}",
+                )
+                self._log(decision, "mcp_tool_call", query, trace_id)
+                return decision
 
         if tool_name == "sql_query":
             sql = str(arguments.get("sql", ""))
@@ -103,7 +123,7 @@ class GovernanceGuard:
                 self._log(pii_decision, "mcp_tool_call", sql, trace_id)
                 return pii_decision
 
-        if tool_name == "summarize_text":
+        if tool_name in {"summarize_text", "count_words"}:
             text = str(arguments.get("text", ""))
             max_chars = int(tool_policy.get("max_input_chars", 10000))
             if len(text) > max_chars:
@@ -227,14 +247,22 @@ class GovernanceGuard:
             return decision
 
         if tool_name == "run_sql_query":
+            sql = str(arguments.get("sql", ""))
             sql_decision = self._validate_sql(
                 actor_id,
-                str(arguments.get("sql", "")),
+                sql,
                 {"read_only": True, "allowed_tables": ["agent_metrics"]},
+                connection_type=ConnectionType.A2A,
             )
             if not sql_decision.allowed:
                 self._log(sql_decision, "a2a_tool_call", str(arguments), trace_id)
                 return sql_decision
+            pii_decision = self._check_pii(
+                actor_id, sql, ConnectionType.A2A, tool_name
+            )
+            if pii_decision.needs_approval:
+                self._log(pii_decision, "a2a_tool_call", sql, trace_id)
+                return pii_decision
 
         decision = GovernanceDecision(
             verdict=GovernanceVerdict.ALLOW,
@@ -307,6 +335,7 @@ class GovernanceGuard:
         actor_id: str,
         sql: str,
         tool_policy: dict[str, Any],
+        connection_type: ConnectionType = ConnectionType.MCP,
     ) -> GovernanceDecision:
         sql_upper = sql.strip().upper()
         resource = "sql:validation"
@@ -316,7 +345,7 @@ class GovernanceGuard:
                 verdict=GovernanceVerdict.DENY,
                 reason="Chỉ cho phép SELECT (read-only)",
                 actor_id=actor_id,
-                connection_type=ConnectionType.MCP,
+                connection_type=connection_type,
                 resource=resource,
             )
 
@@ -326,7 +355,7 @@ class GovernanceGuard:
                 verdict=GovernanceVerdict.DENY,
                 reason="Câu lệnh SQL ghi/DDL bị chặn bởi governance",
                 actor_id=actor_id,
-                connection_type=ConnectionType.MCP,
+                connection_type=connection_type,
                 resource=resource,
             )
 
@@ -336,7 +365,7 @@ class GovernanceGuard:
                 verdict=GovernanceVerdict.DENY,
                 reason=f"Chỉ được truy vấn bảng: {allowed_tables}",
                 actor_id=actor_id,
-                connection_type=ConnectionType.MCP,
+                connection_type=connection_type,
                 resource=resource,
             )
 
@@ -344,7 +373,7 @@ class GovernanceGuard:
             verdict=GovernanceVerdict.ALLOW,
             reason="SQL read-only hợp lệ",
             actor_id=actor_id,
-            connection_type=ConnectionType.MCP,
+            connection_type=connection_type,
             resource=resource,
         )
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 
 def _tokenize(text: str) -> dict[str, float]:
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    tokens = re.findall(r"[^\W_]+", text.casefold(), flags=re.UNICODE)
     counts: dict[str, float] = {}
     for token in tokens:
         counts[token] = counts.get(token, 0.0) + 1.0
@@ -64,3 +64,15 @@ class SemanticRouter:
             return fallback
         name, score = candidates[0]
         return name if score >= self.threshold else fallback
+
+    def route_with_chain(self, request: str, chain: list[str]) -> str:
+        """Route theo điểm; nếu dưới ngưỡng, chọn fallback hợp lệ đầu tiên."""
+        candidates = self.route(request, top_k=1)
+        if candidates and candidates[0][1] >= self.threshold:
+            return candidates[0][0]
+
+        known_agents = {agent.name for agent in self.agents}
+        return next(
+            (name for name in chain if name == "orchestrator" or name in known_agents),
+            "orchestrator",
+        )
